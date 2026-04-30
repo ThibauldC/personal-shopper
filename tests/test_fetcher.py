@@ -1,0 +1,222 @@
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from personal_shopper.config import Settings
+from personal_shopper.recipes.fetcher import (
+    FetchError,
+    _extract_recipe_links,
+    _parse_recipe_detail,
+    fetch_recipe_detail,
+    fetch_vegetarian_recipes,
+)
+from personal_shopper.recipes.models import Recipe
+
+BASE_URL = "https://www.delhaize.be"
+
+LISTING_HTML = """
+<html><body>
+  <a href="/r/R00001">Pasta</a>
+  <a href="/r/R00002">Salade</a>
+  <a href="/r/R00003">Soep</a>
+  <a href="/r/R00001">Pasta</a>
+  <a href="/other/page">Other</a>
+  <a href="/products/cheese">Cheese</a>
+</body></html>
+"""
+
+RECIPE_HTML = """
+<html>
+<head><meta property="og:image" content="https://img.example.com/pasta.jpg"/></head>
+<body>
+  <h1>Veggie Pasta Pesto</h1>
+  <p>Bereidingstijd: 25 min. | Moeilijkheid: Makkelijk</p>
+  <p>4 porties</p>
+  <ul>
+    <li><strong>500 g</strong> volkoren spaghetti</li>
+    <li><strong>2 el</strong> pesto</li>
+    <li><strong>50 g</strong> pijnboompitten</li>
+  </ul>
+</body>
+</html>
+"""
+
+RECIPE_HTML_NO_PREP = """
+<html>
+<body>
+  <h1>Simple Salad</h1>
+  <p>2 porties</p>
+  <ul><li><strong>100 g</strong> sla</li></ul>
+</body>
+</html>
+"""
+
+
+class TestExtractRecipeLinks:
+    def test_extracts_valid_links(self):
+        links = _extract_recipe_links(LISTING_HTML, BASE_URL)
+        assert f"{BASE_URL}/r/R00001" in links
+        assert f"{BASE_URL}/r/R00002" in links
+        assert f"{BASE_URL}/r/R00003" in links
+
+    def test_deduplicates(self):
+        links = _extract_recipe_links(LISTING_HTML, BASE_URL)
+        assert links.count(f"{BASE_URL}/r/R00001") == 1
+
+    def test_excludes_non_recipe_links(self):
+        links = _extract_recipe_links(LISTING_HTML, BASE_URL)
+        assert not any("/other/" in url for url in links)
+        assert not any("/products/" in url for url in links)
+
+    def test_empty_html(self):
+        assert _extract_recipe_links("<html></html>", BASE_URL) == []
+
+
+class TestParseRecipeDetail:
+    def test_parses_title(self):
+        recipe = _parse_recipe_detail(RECIPE_HTML, f"{BASE_URL}/r/R00001")
+        assert recipe.title == "Veggie Pasta Pesto"
+
+    def test_parses_prep_time(self):
+        recipe = _parse_recipe_detail(RECIPE_HTML, f"{BASE_URL}/r/R00001")
+        assert recipe.prep_time_min == 25
+
+    def test_parses_servings(self):
+        recipe = _parse_recipe_detail(RECIPE_HTML, f"{BASE_URL}/r/R00001")
+        assert recipe.servings == 4
+
+    def test_parses_image_url_from_og(self):
+        recipe = _parse_recipe_detail(RECIPE_HTML, f"{BASE_URL}/r/R00001")
+        assert recipe.image_url == "https://img.example.com/pasta.jpg"
+
+    def test_url_preserved(self):
+        url = f"{BASE_URL}/r/R00001"
+        recipe = _parse_recipe_detail(RECIPE_HTML, url)
+        assert recipe.url == url
+
+    def test_missing_prep_time(self):
+        recipe = _parse_recipe_detail(RECIPE_HTML_NO_PREP, f"{BASE_URL}/r/R00002")
+        assert recipe.prep_time_min is None
+
+    def test_returns_recipe_instance(self):
+        recipe = _parse_recipe_detail(RECIPE_HTML, f"{BASE_URL}/r/R00001")
+        assert isinstance(recipe, Recipe)
+
+
+class TestFetchRecipeDetail:
+    def test_raises_fetch_error_on_non_200(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 404
+        mock_client = MagicMock()
+        mock_client.get.return_value = mock_resp
+
+        with pytest.raises(FetchError) as exc_info:
+            fetch_recipe_detail(f"{BASE_URL}/r/R00001", client=mock_client)
+        assert exc_info.value.status_code == 404
+
+    def test_returns_recipe_on_200(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = RECIPE_HTML
+        mock_client = MagicMock()
+        mock_client.get.return_value = mock_resp
+
+        recipe = fetch_recipe_detail(f"{BASE_URL}/r/R00001", client=mock_client)
+        assert recipe.title == "Veggie Pasta Pesto"
+
+    def test_fetch_error_str(self):
+        err = FetchError(url="https://example.com", status_code=503)
+        assert "503" in str(err)
+        assert "example.com" in str(err)
+
+
+class TestFetchVegetarianRecipes:
+    def _make_mock_client(self, listing_html: str, detail_html: str):
+        def get(url: str, **kwargs):
+            resp = MagicMock()
+            resp.status_code = 200
+            if "/r/" in url:
+                resp.text = detail_html
+            else:
+                resp.text = listing_html
+            return resp
+
+        client = MagicMock()
+        client.get.side_effect = get
+        client.__enter__ = lambda s: s
+        client.__exit__ = MagicMock(return_value=False)
+        return client
+
+    def test_returns_requested_count(self):
+        settings = Settings(delhaize_recipes_per_run=2)
+        big_listing = LISTING_HTML  # has 3 unique recipe links
+
+        with patch("personal_shopper.recipes.fetcher._make_client") as mock_factory:
+            mock_factory.return_value = self._make_mock_client(big_listing, RECIPE_HTML)
+            recipes = fetch_vegetarian_recipes(count=2, settings=settings)
+
+        assert len(recipes) == 2
+
+    def test_returns_recipe_objects(self):
+        settings = Settings(delhaize_recipes_per_run=3)
+
+        with patch("personal_shopper.recipes.fetcher._make_client") as mock_factory:
+            mock_factory.return_value = self._make_mock_client(LISTING_HTML, RECIPE_HTML)
+            recipes = fetch_vegetarian_recipes(count=3, settings=settings)
+
+        assert all(isinstance(r, Recipe) for r in recipes)
+
+    def test_skips_failed_detail_pages(self):
+        settings = Settings(delhaize_recipes_per_run=3)
+
+        def get(url: str, **kwargs):
+            resp = MagicMock()
+            if "/r/R00001" in url:
+                resp.status_code = 500
+            elif "/r/" in url:
+                resp.status_code = 200
+                resp.text = RECIPE_HTML
+            else:
+                resp.status_code = 200
+                resp.text = LISTING_HTML
+            return resp
+
+        client = MagicMock()
+        client.get.side_effect = get
+        client.__enter__ = lambda s: s
+        client.__exit__ = MagicMock(return_value=False)
+
+        with patch("personal_shopper.recipes.fetcher._make_client", return_value=client):
+            recipes = fetch_vegetarian_recipes(count=3, settings=settings)
+
+        assert len(recipes) == 2  # R00002 and R00003 succeed; R00001 skipped
+
+    def test_skips_failed_listing_pages(self):
+        settings = Settings(delhaize_recipes_per_run=3)
+
+        call_count = 0
+
+        def get(url: str, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            resp = MagicMock()
+            if "/r/" in url:
+                resp.status_code = 200
+                resp.text = RECIPE_HTML
+            elif call_count == 1:
+                resp.status_code = 503  # first listing fails
+                resp.text = ""
+            else:
+                resp.status_code = 200
+                resp.text = LISTING_HTML
+            return resp
+
+        client = MagicMock()
+        client.get.side_effect = get
+        client.__enter__ = lambda s: s
+        client.__exit__ = MagicMock(return_value=False)
+
+        with patch("personal_shopper.recipes.fetcher._make_client", return_value=client):
+            recipes = fetch_vegetarian_recipes(count=2, settings=settings)
+
+        assert len(recipes) == 2
