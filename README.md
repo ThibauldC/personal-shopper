@@ -17,6 +17,43 @@ uv sync --extra dev
 cp .env.example .env  # fill in your credentials
 ```
 
+### Creating a Slack app
+
+1. Go to [api.slack.com/apps](https://api.slack.com/apps) and click **Create New App → From scratch**.
+2. Give it a name (e.g. `personal-shopper`) and select your workspace.
+3. Under **Settings → Basic Information**, scroll to **App Credentials**:
+   - Copy **Signing Secret** → `SLACK_SIGNING_SECRET`
+4. Under **Features → OAuth & Permissions**, add the bot token scopes you need (`chat:write`, `channels:read`, etc.), then click **Install to Workspace**.
+   - Copy the **Bot User OAuth Token** (starts with `xoxb-`) → `SLACK_BOT_TOKEN`
+5. Under **Features → Interactivity & Shortcuts**, enable interactivity and set the **Request URL** to your server's `/slack/events` endpoint.
+
+   **Local dev with ngrok:**
+
+   Install ngrok if you haven't:
+   ```bash
+   brew install ngrok
+   ngrok config add-authtoken <your-token>  # one-time, from ngrok dashboard
+   ```
+
+   In one terminal, start the Bolt server:
+   ```bash
+   uv run python -c "from personal_shopper.slack.bot import create_app; app = create_app(); app.start(port=3000)"
+   ```
+
+   In another terminal, expose it:
+   ```bash
+   ngrok http 3000
+   ```
+
+   ngrok prints a public URL like `https://abc123.ngrok-free.app`. Paste this into the Slack **Request URL** field:
+   ```
+   https://abc123.ngrok-free.app/slack/events
+   ```
+
+   Slack will send a verification request immediately — the Bolt server handles it automatically. Once the URL shows **Verified**, button clicks in Slack will reach your local process.
+
+   > **Note:** the ngrok URL changes every time you restart ngrok (on the free plan). You'll need to update the Request URL in the Slack dashboard each session.
+
 ### Environment variables
 
 | Variable | Description | Default |
