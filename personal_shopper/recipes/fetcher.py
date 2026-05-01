@@ -1,4 +1,7 @@
+import logging
 import re
+import sys
+import time
 from dataclasses import dataclass
 
 import httpx
@@ -6,6 +9,18 @@ from bs4 import BeautifulSoup
 
 from personal_shopper.config import Settings, get_settings
 from personal_shopper.recipes.models import Recipe
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    stream=sys.stdout,
+    force=True,
+)
+# httpx is very chatty at DEBUG; keep it at INFO so we still see request lines.
+logging.getLogger("httpx").setLevel(logging.INFO)
+logging.getLogger("httpcore").setLevel(logging.INFO)
+
+logger = logging.getLogger("personal_shopper.fetcher")
 
 _DEFAULT_HEADERS = {
     "User-Agent": (
@@ -89,7 +104,10 @@ def fetch_recipe_detail(url: str, client: httpx.Client | None = None) -> Recipe:
     if own_client:
         client = _make_client()
     try:
+        logger.info("GET recipe detail %s", url)
+        t0 = time.monotonic()
         resp = client.get(url)
+        logger.info("  -> %s in %.2fs (%d bytes)", resp.status_code, time.monotonic() - t0, len(resp.content))
         if resp.status_code != 200:
             raise FetchError(url=url, status_code=resp.status_code)
         return _parse_recipe_detail(resp.text, url)
@@ -115,31 +133,53 @@ def fetch_vegetarian_recipes(
         f"{settings.delhaize_base_url}/nl/recepten/hoofdgerechten",
     ]
 
+    logger.info("fetch_vegetarian_recipes start (count=%d)", count)
+    logger.info("listing urls: %s", listing_urls)
+
     with _make_client() as client:
         recipe_urls: list[str] = []
         seen_urls: set[str] = set()
 
         for listing_url in listing_urls:
             if len(recipe_urls) >= count * 3:
+                logger.info("collected enough listing urls (%d), stopping", len(recipe_urls))
                 break
+            logger.info("GET listing %s", listing_url)
+            t0 = time.monotonic()
             try:
                 resp = client.get(listing_url)
+                logger.info(
+                    "  -> %s in %.2fs (%d bytes)",
+                    resp.status_code,
+                    time.monotonic() - t0,
+                    len(resp.content),
+                )
                 if resp.status_code != 200:
+                    logger.warning("  skipping (non-200)")
                     continue
-                for url in _extract_recipe_links(resp.text, settings.delhaize_base_url):
+                found = _extract_recipe_links(resp.text, settings.delhaize_base_url)
+                logger.info("  found %d recipe links on listing", len(found))
+                for url in found:
                     if url not in seen_urls:
                         seen_urls.add(url)
                         recipe_urls.append(url)
-            except httpx.RequestError:
+            except httpx.RequestError as e:
+                logger.warning("  request error after %.2fs: %r", time.monotonic() - t0, e)
                 continue
+
+        logger.info("total unique recipe urls collected: %d", len(recipe_urls))
 
         recipes: list[Recipe] = []
-        for url in recipe_urls:
+        for idx, url in enumerate(recipe_urls, 1):
             if len(recipes) >= count:
+                logger.info("reached target count %d, stopping detail fetch", count)
                 break
+            logger.info("[%d/%d] fetching detail (%d/%d so far)", idx, len(recipe_urls), len(recipes), count)
             try:
                 recipes.append(fetch_recipe_detail(url, client=client))
-            except (FetchError, httpx.RequestError):
+            except (FetchError, httpx.RequestError) as e:
+                logger.warning("  detail fetch failed: %r", e)
                 continue
 
+    logger.info("fetch_vegetarian_recipes done, returning %d recipes", len(recipes[:count]))
     return recipes[:count]
