@@ -1,4 +1,6 @@
 import logging
+import json
+import gzip
 import re
 import sys
 import time
@@ -32,9 +34,86 @@ _DEFAULT_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
-_RECIPE_LINK_RE = re.compile(r"^/r/[A-Za-z0-9]+$")
+_RECIPE_LINK_RE = re.compile(r"^/(?:nl/)?r/[A-Za-z0-9]+$")
 _PREP_TIME_RE = re.compile(r"(\d+)\s*min", re.IGNORECASE)
 _SERVINGS_RE = re.compile(r"(\d+)\s*porti", re.IGNORECASE)
+_WHITESPACE_RE = re.compile(r"\s+")
+_SITEMAP_LOC_RE = re.compile(r"<loc>([^<]+)</loc>")
+_RECIPE_DETAIL_URL_RE = re.compile(r"https://www\.delhaize\.be/nl/recepten/receptDetails/[^\s<]+/r/([A-Za-z0-9]+)$")
+_RECIPE_SLUG_RE = re.compile(r"/receptDetails/([^/]+)/r/[A-Za-z0-9]+$")
+
+_ALLOWED_KEYWORDS = {"vegetarisch", "vegan"}
+_REQUIRED_KEYWORDS = {"hoofdgerecht", "diner"}
+_DISALLOWED_KEYWORDS = {
+    "dessert",
+    "desserts",
+    "desserts en snacks",
+    "snack",
+    "snacks",
+    "ontbijt",
+    "lunch",
+    "aperitief",
+    "apero",
+    "voorgerecht",
+    "soep",
+    "salade",
+}
+_NON_VEG_TERMS = {
+    "kip",
+    "kalkoen",
+    "spek",
+    "ham",
+    "gehakt",
+    "rund",
+    "runds",
+    "rundvlees",
+    "varken",
+    "varkens",
+    "varkensvlees",
+    "filet pur",
+    "chorizo",
+    "worst",
+    "salami",
+    "eend",
+    "konijn",
+    "paté",
+    "tonijn",
+    "zalm",
+    "kabeljauw",
+    "schelvis",
+    "forel",
+    "vis",
+    "garnalen",
+    "garnaal",
+    "scampi",
+    "mossel",
+    "mosselen",
+    "gamba",
+    "gambas",
+    "kreeft",
+    "oester",
+    "ansjovis",
+    "sardien",
+    "sardines",
+    "haring",
+    "balletjes",
+}
+_URL_DISALLOWED_TERMS = _NON_VEG_TERMS | {
+    "dessert",
+    "desserts",
+    "brownie",
+    "brownies",
+    "tiramisu",
+    "panna",
+    "baklava",
+    "cake",
+    "taart",
+    "koek",
+    "cookie",
+    "cocktail",
+    "drank",
+    "drankjes",
+}
 
 
 @dataclass
@@ -56,6 +135,8 @@ def _extract_recipe_links(html: str, base_url: str) -> list[str]:
     urls: list[str] = []
     for tag in soup.find_all("a", href=_RECIPE_LINK_RE):
         href: str = tag["href"]
+        if href.startswith("/nl/r/"):
+            href = href.removeprefix("/nl")
         if href not in seen:
             seen.add(href)
             urls.append(f"{base_url}{href}")
@@ -89,13 +170,127 @@ def _parse_recipe_detail(html: str, url: str) -> Recipe:
         if main_img and main_img.get("src"):
             image_url = main_img["src"]
 
+    metadata = _extract_recipe_metadata(soup)
+    keywords = metadata.get("keywords", [])
+    recipe_category = metadata.get("recipe_category")
+    ingredients = metadata.get("ingredients", [])
+
     return Recipe(
         title=title,
         url=url,
         prep_time_min=prep_time_min,
         servings=servings,
         image_url=image_url,
+        keywords=keywords,
+        recipe_category=recipe_category,
+        ingredients=ingredients,
+        raw_metadata=metadata,
     )
+
+
+def _normalize_text(value: str) -> str:
+    return _WHITESPACE_RE.sub(" ", value).strip().lower()
+
+
+def _extract_recipe_metadata(soup: BeautifulSoup) -> dict:
+    metadata: dict = {}
+    script_tag = soup.find("script", attrs={"type": "application/ld+json", "id": "recipe-seo-data"})
+    if not script_tag:
+        return metadata
+
+    raw_content = script_tag.string or script_tag.get_text(strip=True)
+    if not raw_content:
+        return metadata
+
+    try:
+        payload = json.loads(raw_content)
+    except json.JSONDecodeError:
+        logger.debug("Could not parse JSON-LD recipe metadata")
+        return metadata
+
+    keywords_raw = payload.get("keywords", "")
+    if isinstance(keywords_raw, str):
+        keywords = [k.strip() for k in keywords_raw.split(",") if k.strip()]
+    elif isinstance(keywords_raw, list):
+        keywords = [str(k).strip() for k in keywords_raw if str(k).strip()]
+    else:
+        keywords = []
+
+    category = payload.get("recipeCategory")
+    category_str = str(category).strip() if category else None
+
+    ingredients_raw = payload.get("recipeIngredient", [])
+    ingredients = [str(i).strip() for i in ingredients_raw if str(i).strip()] if isinstance(ingredients_raw, list) else []
+
+    metadata["keywords"] = keywords
+    metadata["recipe_category"] = category_str
+    metadata["ingredients"] = ingredients
+    return metadata
+
+
+def _is_allowed_recipe(recipe: Recipe) -> bool:
+    normalized_keywords = {_normalize_text(k) for k in recipe.keywords if k}
+    category = _normalize_text(recipe.recipe_category) if recipe.recipe_category else ""
+    text_blob = _normalize_text(" ".join([recipe.title, *recipe.ingredients]))
+
+    has_allowed_keyword = bool(normalized_keywords & _ALLOWED_KEYWORDS)
+    has_required_meal = bool(normalized_keywords & _REQUIRED_KEYWORDS) or category in _REQUIRED_KEYWORDS
+    has_disallowed_meal = bool(normalized_keywords & _DISALLOWED_KEYWORDS) or category in _DISALLOWED_KEYWORDS
+    has_non_veg_term = any(term in text_blob for term in _NON_VEG_TERMS)
+
+    return has_allowed_keyword and has_required_meal and not has_disallowed_meal and not has_non_veg_term
+
+
+def _extract_recipe_links_from_sitemap(client: httpx.Client, limit: int) -> list[str]:
+    index_url = "https://www.delhaize.be/sitemapnl/delhaizesitemapindex.xml"
+    logger.info("GET sitemap index %s", index_url)
+    t0 = time.monotonic()
+    resp = client.get(index_url)
+    logger.info("  -> %s in %.2fs (%d bytes)", resp.status_code, time.monotonic() - t0, len(resp.content))
+    if resp.status_code != 200:
+        return []
+
+    sitemap_urls = _SITEMAP_LOC_RE.findall(resp.text)
+    if not sitemap_urls:
+        return []
+
+    collected: list[str] = []
+    seen: set[str] = set()
+
+    for sitemap_url in sitemap_urls:
+        logger.info("GET sitemap chunk %s", sitemap_url)
+        t1 = time.monotonic()
+        chunk = client.get(sitemap_url)
+        logger.info("  -> %s in %.2fs (%d bytes)", chunk.status_code, time.monotonic() - t1, len(chunk.content))
+        if chunk.status_code != 200:
+            continue
+
+        try:
+            xml_text = gzip.decompress(chunk.content).decode("utf-8", errors="ignore")
+        except OSError:
+            xml_text = chunk.text
+
+        for loc in _SITEMAP_LOC_RE.findall(xml_text):
+            m = _RECIPE_DETAIL_URL_RE.match(loc)
+            if not m:
+                continue
+            if not _is_promising_recipe_url(loc):
+                continue
+            if loc not in seen:
+                seen.add(loc)
+                collected.append(loc)
+                if len(collected) >= limit:
+                    return collected
+
+    return collected
+
+
+def _is_promising_recipe_url(url: str) -> bool:
+    match = _RECIPE_SLUG_RE.search(url)
+    if not match:
+        return True
+    slug = _normalize_text(match.group(1).replace("-", " "))
+    return not any(term in slug for term in _URL_DISALLOWED_TERMS)
 
 
 def fetch_recipe_detail(url: str, client: httpx.Client | None = None) -> Recipe:
@@ -127,11 +322,18 @@ def fetch_vegetarian_recipes(
         count = settings.delhaize_recipes_per_run
 
     listing_urls = [
+        f"{settings.delhaize_base_url}/nl/recepten",
+        f"{settings.delhaize_base_url}/nl/recepten/hoofdgerechten",
+        f"{settings.delhaize_base_url}/nl/recepten/wereldkeuken/",
+        f"{settings.delhaize_base_url}/nl/recepten/italiaans",
+        f"{settings.delhaize_base_url}/nl/recepten/aziatisch",
+        f"{settings.delhaize_base_url}/nl/recepten/vegetarisch",
+        f"{settings.delhaize_base_url}/nl/recepten/vegan",
         f"{settings.delhaize_base_url}/nl/plantbased",
         f"{settings.delhaize_base_url}/nl/recepten/salades",
         f"{settings.delhaize_base_url}/nl/recepten/soep/",
-        f"{settings.delhaize_base_url}/nl/recepten/hoofdgerechten",
     ]
+    max_candidate_urls = max(count * 20, 80)
 
     logger.info("fetch_vegetarian_recipes start (count=%d)", count)
     logger.info("listing urls: %s", listing_urls)
@@ -141,7 +343,7 @@ def fetch_vegetarian_recipes(
         seen_urls: set[str] = set()
 
         for listing_url in listing_urls:
-            if len(recipe_urls) >= count * 3:
+            if len(recipe_urls) >= max_candidate_urls:
                 logger.info("collected enough listing urls (%d), stopping", len(recipe_urls))
                 break
             logger.info("GET listing %s", listing_url)
@@ -169,6 +371,20 @@ def fetch_vegetarian_recipes(
 
         logger.info("total unique recipe urls collected: %d", len(recipe_urls))
 
+        if len(recipe_urls) < max_candidate_urls:
+            needed = max_candidate_urls - len(recipe_urls)
+            logger.info("collecting additional candidates from sitemap (need up to %d)", needed)
+            sitemap_urls = _extract_recipe_links_from_sitemap(client=client, limit=max_candidate_urls)
+            added = 0
+            for url in sitemap_urls:
+                if url not in seen_urls:
+                    seen_urls.add(url)
+                    recipe_urls.append(url)
+                    added += 1
+                    if len(recipe_urls) >= max_candidate_urls:
+                        break
+            logger.info("added %d sitemap candidates; total now %d", added, len(recipe_urls))
+
         recipes: list[Recipe] = []
         for idx, url in enumerate(recipe_urls, 1):
             if len(recipes) >= count:
@@ -176,7 +392,11 @@ def fetch_vegetarian_recipes(
                 break
             logger.info("[%d/%d] fetching detail (%d/%d so far)", idx, len(recipe_urls), len(recipes), count)
             try:
-                recipes.append(fetch_recipe_detail(url, client=client))
+                recipe = fetch_recipe_detail(url, client=client)
+                if _is_allowed_recipe(recipe):
+                    recipes.append(recipe)
+                else:
+                    logger.info("  skipped recipe due to strict veg/main-course filter: %s", recipe.title)
             except (FetchError, httpx.RequestError) as e:
                 logger.warning("  detail fetch failed: %r", e)
                 continue

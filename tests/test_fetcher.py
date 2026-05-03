@@ -6,6 +6,7 @@ from personal_shopper.config import Settings
 from personal_shopper.recipes.fetcher import (
     FetchError,
     _extract_recipe_links,
+    _is_allowed_recipe,
     _parse_recipe_detail,
     fetch_recipe_detail,
     fetch_vegetarian_recipes,
@@ -19,6 +20,7 @@ LISTING_HTML = """
   <a href="/r/R00001">Pasta</a>
   <a href="/r/R00002">Salade</a>
   <a href="/r/R00003">Soep</a>
+  <a href="/nl/r/R00004">Veg Curry</a>
   <a href="/r/R00001">Pasta</a>
   <a href="/other/page">Other</a>
   <a href="/products/cheese">Cheese</a>
@@ -37,6 +39,15 @@ RECIPE_HTML = """
     <li><strong>2 el</strong> pesto</li>
     <li><strong>50 g</strong> pijnboompitten</li>
   </ul>
+  <script id="recipe-seo-data" type="application/ld+json">
+  {
+    "@context": "http://schema.org/",
+    "@type": "Recipe",
+    "keywords": "Vegetarisch, Diner, Hoofdgerecht",
+    "recipeCategory": "Diner",
+    "recipeIngredient": ["spaghetti", "pesto", "rucola"]
+  }
+  </script>
 </body>
 </html>
 """
@@ -51,6 +62,40 @@ RECIPE_HTML_NO_PREP = """
 </html>
 """
 
+RECIPE_HTML_DESSERT = """
+<html>
+<body>
+  <h1>Tiramisu</h1>
+  <script id="recipe-seo-data" type="application/ld+json">
+  {
+    "@context": "http://schema.org/",
+    "@type": "Recipe",
+    "keywords": "Vegetarisch, Dessert",
+    "recipeCategory": "Dessert",
+    "recipeIngredient": ["mascarpone", "koffie"]
+  }
+  </script>
+</body>
+</html>
+"""
+
+RECIPE_HTML_FISH = """
+<html>
+<body>
+  <h1>Pasta met zalm</h1>
+  <script id="recipe-seo-data" type="application/ld+json">
+  {
+    "@context": "http://schema.org/",
+    "@type": "Recipe",
+    "keywords": "Vegetarisch, Diner, Hoofdgerecht",
+    "recipeCategory": "Diner",
+    "recipeIngredient": ["zalm", "pasta"]
+  }
+  </script>
+</body>
+</html>
+"""
+
 
 class TestExtractRecipeLinks:
     def test_extracts_valid_links(self):
@@ -58,6 +103,7 @@ class TestExtractRecipeLinks:
         assert f"{BASE_URL}/r/R00001" in links
         assert f"{BASE_URL}/r/R00002" in links
         assert f"{BASE_URL}/r/R00003" in links
+        assert f"{BASE_URL}/r/R00004" in links
 
     def test_deduplicates(self):
         links = _extract_recipe_links(LISTING_HTML, BASE_URL)
@@ -67,6 +113,16 @@ class TestExtractRecipeLinks:
         links = _extract_recipe_links(LISTING_HTML, BASE_URL)
         assert not any("/other/" in url for url in links)
         assert not any("/products/" in url for url in links)
+
+    def test_normalizes_nl_recipe_links(self):
+        html = """
+        <html><body>
+          <a href="/nl/r/R00001">Pasta NL</a>
+          <a href="/r/R00001">Pasta</a>
+        </body></html>
+        """
+        links = _extract_recipe_links(html, BASE_URL)
+        assert links == [f"{BASE_URL}/r/R00001"]
 
     def test_empty_html(self):
         assert _extract_recipe_links("<html></html>", BASE_URL) == []
@@ -101,6 +157,28 @@ class TestParseRecipeDetail:
     def test_returns_recipe_instance(self):
         recipe = _parse_recipe_detail(RECIPE_HTML, f"{BASE_URL}/r/R00001")
         assert isinstance(recipe, Recipe)
+
+    def test_parses_metadata_keywords(self):
+        recipe = _parse_recipe_detail(RECIPE_HTML, f"{BASE_URL}/r/R00001")
+        assert "Vegetarisch" in recipe.keywords
+
+    def test_parses_metadata_ingredients(self):
+        recipe = _parse_recipe_detail(RECIPE_HTML, f"{BASE_URL}/r/R00001")
+        assert "rucola" in recipe.ingredients
+
+
+class TestStrictFilter:
+    def test_accepts_vegetarian_main_course(self):
+        recipe = _parse_recipe_detail(RECIPE_HTML, f"{BASE_URL}/r/R00001")
+        assert _is_allowed_recipe(recipe)
+
+    def test_rejects_dessert(self):
+        recipe = _parse_recipe_detail(RECIPE_HTML_DESSERT, f"{BASE_URL}/r/R00009")
+        assert not _is_allowed_recipe(recipe)
+
+    def test_rejects_fish_even_if_keyword_says_vegetarian(self):
+        recipe = _parse_recipe_detail(RECIPE_HTML_FISH, f"{BASE_URL}/r/R00010")
+        assert not _is_allowed_recipe(recipe)
 
 
 class TestFetchRecipeDetail:
@@ -189,7 +267,7 @@ class TestFetchVegetarianRecipes:
         with patch("personal_shopper.recipes.fetcher._make_client", return_value=client):
             recipes = fetch_vegetarian_recipes(count=3, settings=settings)
 
-        assert len(recipes) == 2  # R00002 and R00003 succeed; R00001 skipped
+        assert len(recipes) == 3  # R00002, R00003 and R00004 succeed; R00001 skipped
 
     def test_skips_failed_listing_pages(self):
         settings = Settings(delhaize_recipes_per_run=3)
