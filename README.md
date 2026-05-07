@@ -4,7 +4,7 @@ Automates weekly meal planning and Delhaize Click & Collect grocery shopping via
 
 ## What it does
 
-1. Fetches 8 vegetarian recipes weekly from Delhaize
+1. Builds a local catalog of vegetarian main-course recipes from Delhaize
 2. Sends them to the user via Slack (in Dutch)
 3. User selects recipes via Slack
 4. Ingredients are extracted, aggregated, and merged with staple items
@@ -72,6 +72,16 @@ uv run pytest          # run tests with coverage
 uv run ruff check .    # lint
 ```
 
+## Recipe catalog refresh
+
+Refresh the local recipe catalog (live scrape + strict filtering):
+
+```bash
+uv run python main.py refresh-recipes
+```
+
+This stores allowed recipes (including ingredients) in SQLite. Normal runs then pick a random sample from this local catalog.
+
 ## Manual trigger (US-004)
 
 Send recipe options to Slack without waiting for the weekly scheduler:
@@ -80,7 +90,7 @@ Send recipe options to Slack without waiting for the weekly scheduler:
 uv run python main.py slack
 ```
 
-This fetches 8 live recipes, persists them to the database, and posts Block Kit cards to `SLACK_CHANNEL` with a "Selecteer" button per recipe.
+This loads 8 recipes from the local catalog using a random seed, persists them to the database, and posts Block Kit cards to `SLACK_CHANNEL` with a "Selecteer" button per recipe.
 
 ## Slack interaction (US-005)
 
@@ -104,7 +114,7 @@ personal_shopper/
     db.py              # connection management
   recipes/
     models.py          # Recipe dataclass
-    fetcher.py         # live Delhaize recipe scraper (httpx + BS4)
+    fetcher.py         # catalog refresh + random local sampling
   slack/
     messages.py        # Dutch Block Kit message builder (US-004)
     store.py           # DB helpers: runs, offered/selected recipes

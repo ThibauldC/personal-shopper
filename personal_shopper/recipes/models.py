@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class Recipe(BaseModel):
@@ -7,7 +7,7 @@ class Recipe(BaseModel):
     prep_time_min: int | None = None
     servings: int | None = None
     image_url: str | None = None
-    keywords: list[str] = []
+    keywords: list[str] = Field(default_factory=list)
     recipe_category: str | None = None
-    ingredients: list[str] = []
-    raw_metadata: dict = {}
+    ingredients: list[str] = Field(default_factory=list)
+    raw_metadata: dict = Field(default_factory=dict)

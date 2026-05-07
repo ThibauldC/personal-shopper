@@ -3,13 +3,16 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from personal_shopper.config import Settings
+from personal_shopper.database.db import get_connection, init_db
 from personal_shopper.recipes.fetcher import (
     FetchError,
     _extract_recipe_links,
     _is_allowed_recipe,
+    _is_promising_recipe_url,
     _parse_recipe_detail,
     fetch_recipe_detail,
     fetch_vegetarian_recipes,
+    sample_recipes_from_catalog,
 )
 from personal_shopper.recipes.models import Recipe
 
@@ -298,3 +301,58 @@ class TestFetchVegetarianRecipes:
             recipes = fetch_vegetarian_recipes(count=2, settings=settings)
 
         assert len(recipes) == 2
+
+
+class TestSampleRecipesFromCatalog:
+    def test_returns_random_sample_with_seed(self, tmp_path):
+        db_path = tmp_path / "catalog.db"
+        init_db(db_path)
+        settings = Settings(database_path=db_path, delhaize_recipes_per_run=2)
+
+        with get_connection(db_path) as conn:
+            for idx in range(1, 6):
+                conn.execute(
+                    """INSERT INTO recipe_catalog
+                       (url, title, prep_time_min, servings, image_url, keywords,
+                        recipe_category, ingredients, raw_metadata, is_allowed, fetched_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        f"https://www.delhaize.be/r/R{idx}",
+                        f"Recipe {idx}",
+                        20,
+                        2,
+                        None,
+                        '["Vegetarisch", "Diner"]',
+                        "Diner",
+                        '["ingredient"]',
+                        "{}",
+                        1,
+                        "2026-01-01T00:00:00+00:00",
+                    ),
+                )
+
+        sample_a, seed_a = sample_recipes_from_catalog(settings=settings, seed=123)
+        sample_b, seed_b = sample_recipes_from_catalog(settings=settings, seed=123)
+
+        assert seed_a == 123
+        assert seed_b == 123
+        assert [recipe.url for recipe in sample_a] == [recipe.url for recipe in sample_b]
+        assert len(sample_a) == 2
+
+    def test_raises_when_catalog_too_small(self, tmp_path):
+        db_path = tmp_path / "catalog_small.db"
+        init_db(db_path)
+        settings = Settings(database_path=db_path, delhaize_recipes_per_run=2)
+
+        with pytest.raises(ValueError):
+            sample_recipes_from_catalog(settings=settings)
+
+
+class TestRecipeUrlPrefilter:
+    def test_rejects_obvious_dessert_slug(self):
+        url = "https://www.delhaize.be/nl/recepten/receptDetails/choco-brownie/r/R999"
+        assert not _is_promising_recipe_url(url)
+
+    def test_accepts_generic_recipe_url(self):
+        url = "https://www.delhaize.be/r/R12345"
+        assert _is_promising_recipe_url(url)

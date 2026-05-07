@@ -62,4 +62,19 @@ CREATE TABLE IF NOT EXISTS ingredient_product_map (
     confirmed_by_user INTEGER NOT NULL DEFAULT 0,
     updated_at      TEXT    NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS recipe_catalog (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    url             TEXT    NOT NULL UNIQUE,
+    title           TEXT    NOT NULL,
+    prep_time_min   INTEGER,
+    servings        INTEGER,
+    image_url       TEXT,
+    keywords        TEXT    NOT NULL,
+    recipe_category TEXT,
+    ingredients     TEXT    NOT NULL,
+    raw_metadata    TEXT    NOT NULL,
+    is_allowed      INTEGER NOT NULL,
+    fetched_at      TEXT    NOT NULL
+);
 """

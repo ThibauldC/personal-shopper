@@ -36,6 +36,7 @@ def test_all_tables_created(db_path: Path):
         "aggregated_items",
         "staple_items",
         "ingredient_product_map",
+        "recipe_catalog",
     }
     with get_connection(db_path) as conn:
         rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
