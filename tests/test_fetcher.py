@@ -100,6 +100,23 @@ RECIPE_HTML_FISH = """
 </html>
 """
 
+RECIPE_HTML_DRINK = """
+<html>
+<body>
+  <h1>Frisse mocktail</h1>
+  <script id="recipe-seo-data" type="application/ld+json">
+  {
+    "@context": "http://schema.org/",
+    "@type": "Recipe",
+    "keywords": "Vegan, Dranken",
+    "recipeCategory": "Overig",
+    "recipeIngredient": ["limoensap", "ijs"]
+  }
+  </script>
+</body>
+</html>
+"""
+
 
 class TestExtractRecipeLinks:
     def test_extracts_valid_links(self):
@@ -348,6 +365,35 @@ class TestSampleRecipesFromCatalog:
         with pytest.raises(ValueError):
             sample_recipes_from_catalog(settings=settings)
 
+    def test_filters_stale_disallowed_rows_defensively(self, tmp_path):
+        db_path = tmp_path / "catalog_stale.db"
+        init_db(db_path)
+        settings = Settings(database_path=db_path, delhaize_recipes_per_run=1)
+
+        with get_connection(db_path) as conn:
+            conn.execute(
+                """INSERT INTO recipe_catalog
+                   (url, title, prep_time_min, servings, image_url, keywords,
+                    recipe_category, ingredients, raw_metadata, is_allowed, fetched_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    "https://www.delhaize.be/r/R-stale",
+                    "Mocktail",
+                    5,
+                    1,
+                    None,
+                    '["Vegan", "Dranken"]',
+                    "Overig",
+                    '["limoensap"]',
+                    "{}",
+                    1,
+                    "2026-01-01T00:00:00+00:00",
+                ),
+            )
+
+        with pytest.raises(ValueError):
+            sample_recipes_from_catalog(settings=settings, seed=123)
+
 
 class TestRecipeUrlPrefilter:
     def test_rejects_obvious_dessert_slug(self):
@@ -395,3 +441,44 @@ class TestRefreshRecipeCatalog:
         assert stored_allowed == 0
         assert scanned == 0
         mock_extract.assert_called_once_with(client=mock_client, limit=123)
+
+    def test_marks_disallowed_recipe_as_not_allowed(self, tmp_path):
+        db_path = tmp_path / "catalog_refresh_filtering.db"
+        init_db(db_path)
+        settings = Settings(database_path=db_path, delhaize_refresh_max_urls=1)
+
+        mock_client = MagicMock()
+        mock_client.__enter__ = lambda s: s
+        mock_client.__exit__ = MagicMock(return_value=False)
+
+        detail_url = "https://www.delhaize.be/nl/recepten/receptDetails/mocktail/r/R777"
+
+        def get(url: str, **kwargs):
+            resp = MagicMock()
+            if url == detail_url:
+                resp.status_code = 200
+                resp.text = RECIPE_HTML_DRINK
+            else:
+                resp.status_code = 200
+                resp.text = ""
+                resp.content = b""
+            return resp
+
+        mock_client.get.side_effect = get
+
+        with patch("personal_shopper.recipes.fetcher._make_client", return_value=mock_client), patch(
+            "personal_shopper.recipes.fetcher._extract_recipe_links_from_sitemap", return_value=[detail_url]
+        ):
+            stored_allowed, scanned = refresh_recipe_catalog(settings=settings)
+
+        assert stored_allowed == 0
+        assert scanned == 1
+
+        with get_connection(db_path) as conn:
+            row = conn.execute(
+                "SELECT is_allowed FROM recipe_catalog WHERE url = ?",
+                (detail_url,),
+            ).fetchone()
+
+        assert row is not None
+        assert row["is_allowed"] == 0

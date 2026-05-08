@@ -245,16 +245,6 @@ def _is_allowed_recipe(recipe: Recipe) -> bool:
     return has_allowed_keyword and has_required_meal and not has_disallowed_meal and not has_non_veg_term
 
 
-def _is_vegan_or_vegetarian_recipe(recipe: Recipe) -> bool:
-    normalized_keywords = {_normalize_text(k) for k in recipe.keywords if k}
-    text_blob = _normalize_text(" ".join([recipe.title, *recipe.ingredients]))
-
-    has_allowed_keyword = bool(normalized_keywords & _ALLOWED_KEYWORDS)
-    has_non_veg_term = any(term in text_blob for term in _NON_VEG_TERMS)
-
-    return has_allowed_keyword and not has_non_veg_term
-
-
 def _extract_recipe_links_from_sitemap(client: httpx.Client, limit: int | None = None) -> list[str]:
     index_url = "https://www.delhaize.be/sitemapnl/delhaizesitemapindex.xml"
     logger.info("GET sitemap index %s", index_url)
@@ -406,10 +396,9 @@ def refresh_recipe_catalog(
                     logger.warning("  detail fetch failed: %r", e)
                     continue
 
-                if not _is_vegan_or_vegetarian_recipe(recipe):
-                    continue
-
-                stored_allowed_count += 1
+                is_allowed = _is_allowed_recipe(recipe)
+                if is_allowed:
+                    stored_allowed_count += 1
 
                 conn.execute(
                     """INSERT INTO recipe_catalog
@@ -425,8 +414,8 @@ def refresh_recipe_catalog(
                          recipe_category = excluded.recipe_category,
                          ingredients = excluded.ingredients,
                          raw_metadata = excluded.raw_metadata,
-                         is_allowed = 1,
-                         fetched_at = excluded.fetched_at""",
+                          is_allowed = excluded.is_allowed,
+                          fetched_at = excluded.fetched_at""",
                     (
                         recipe.url,
                         recipe.title,
@@ -437,7 +426,7 @@ def refresh_recipe_catalog(
                         recipe.recipe_category,
                         json.dumps(recipe.ingredients),
                         json.dumps(recipe.raw_metadata),
-                        1,
+                        1 if is_allowed else 0,
                         now,
                     ),
                 )
@@ -480,19 +469,19 @@ def sample_recipes_from_catalog(
             keywords = []
             ingredients = []
             raw_metadata = {}
-        recipes.append(
-            Recipe(
-                title=row["title"],
-                url=row["url"],
-                prep_time_min=row["prep_time_min"],
-                servings=row["servings"],
-                image_url=row["image_url"],
-                keywords=keywords,
-                recipe_category=row["recipe_category"],
-                ingredients=ingredients,
-                raw_metadata=raw_metadata,
-            )
+        recipe = Recipe(
+            title=row["title"],
+            url=row["url"],
+            prep_time_min=row["prep_time_min"],
+            servings=row["servings"],
+            image_url=row["image_url"],
+            keywords=keywords,
+            recipe_category=row["recipe_category"],
+            ingredients=ingredients,
+            raw_metadata=raw_metadata,
         )
+        if _is_allowed_recipe(recipe):
+            recipes.append(recipe)
 
     if len(recipes) < count:
         raise ValueError(
