@@ -245,7 +245,17 @@ def _is_allowed_recipe(recipe: Recipe) -> bool:
     return has_allowed_keyword and has_required_meal and not has_disallowed_meal and not has_non_veg_term
 
 
-def _extract_recipe_links_from_sitemap(client: httpx.Client, limit: int) -> list[str]:
+def _is_vegan_or_vegetarian_recipe(recipe: Recipe) -> bool:
+    normalized_keywords = {_normalize_text(k) for k in recipe.keywords if k}
+    text_blob = _normalize_text(" ".join([recipe.title, *recipe.ingredients]))
+
+    has_allowed_keyword = bool(normalized_keywords & _ALLOWED_KEYWORDS)
+    has_non_veg_term = any(term in text_blob for term in _NON_VEG_TERMS)
+
+    return has_allowed_keyword and not has_non_veg_term
+
+
+def _extract_recipe_links_from_sitemap(client: httpx.Client, limit: int | None = None) -> list[str]:
     index_url = "https://www.delhaize.be/sitemapnl/delhaizesitemapindex.xml"
     logger.info("GET sitemap index %s", index_url)
     t0 = time.monotonic()
@@ -283,7 +293,7 @@ def _extract_recipe_links_from_sitemap(client: httpx.Client, limit: int) -> list
             if loc not in seen:
                 seen.add(loc)
                 collected.append(loc)
-                if len(collected) >= limit:
+                if limit is not None and len(collected) >= limit:
                     return collected
 
     return collected
@@ -372,16 +382,20 @@ def refresh_recipe_catalog(
     if settings is None:
         settings = get_settings()
     if max_candidate_urls is None:
-        max_candidate_urls = max(settings.delhaize_recipes_per_run * 40, 300)
+        max_candidate_urls = settings.delhaize_refresh_max_urls
 
-    logger.info("refresh_recipe_catalog start (max_candidates=%d)", max_candidate_urls)
+    if max_candidate_urls is None:
+        logger.info("refresh_recipe_catalog start (full sitemap scan)")
+    else:
+        logger.info("refresh_recipe_catalog start (sitemap capped at %d URLs)", max_candidate_urls)
 
     scanned_count = 0
     stored_allowed_count = 0
     now = datetime.now(UTC).isoformat()
 
     with _make_client() as client:
-        recipe_urls = _collect_candidate_recipe_urls(settings, client, max_candidate_urls)
+        recipe_urls = _extract_recipe_links_from_sitemap(client=client, limit=max_candidate_urls)
+        logger.info("collected %d recipe URLs from sitemap", len(recipe_urls))
         with get_connection(settings.database_path) as conn:
             for idx, url in enumerate(recipe_urls, 1):
                 scanned_count += 1
@@ -392,9 +406,10 @@ def refresh_recipe_catalog(
                     logger.warning("  detail fetch failed: %r", e)
                     continue
 
-                is_allowed = 1 if _is_allowed_recipe(recipe) else 0
-                if is_allowed:
-                    stored_allowed_count += 1
+                if not _is_vegan_or_vegetarian_recipe(recipe):
+                    continue
+
+                stored_allowed_count += 1
 
                 conn.execute(
                     """INSERT INTO recipe_catalog
@@ -410,7 +425,7 @@ def refresh_recipe_catalog(
                          recipe_category = excluded.recipe_category,
                          ingredients = excluded.ingredients,
                          raw_metadata = excluded.raw_metadata,
-                         is_allowed = excluded.is_allowed,
+                         is_allowed = 1,
                          fetched_at = excluded.fetched_at""",
                     (
                         recipe.url,
@@ -422,7 +437,7 @@ def refresh_recipe_catalog(
                         recipe.recipe_category,
                         json.dumps(recipe.ingredients),
                         json.dumps(recipe.raw_metadata),
-                        is_allowed,
+                        1,
                         now,
                     ),
                 )

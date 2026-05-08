@@ -12,6 +12,7 @@ from personal_shopper.recipes.fetcher import (
     _parse_recipe_detail,
     fetch_recipe_detail,
     fetch_vegetarian_recipes,
+    refresh_recipe_catalog,
     sample_recipes_from_catalog,
 )
 from personal_shopper.recipes.models import Recipe
@@ -356,3 +357,41 @@ class TestRecipeUrlPrefilter:
     def test_accepts_generic_recipe_url(self):
         url = "https://www.delhaize.be/r/R12345"
         assert _is_promising_recipe_url(url)
+
+
+class TestRefreshRecipeCatalog:
+    def test_full_sitemap_scan_when_no_limit_set(self, tmp_path):
+        db_path = tmp_path / "catalog_refresh.db"
+        init_db(db_path)
+        settings = Settings(database_path=db_path, delhaize_refresh_max_urls=None)
+
+        mock_client = MagicMock()
+        mock_client.__enter__ = lambda s: s
+        mock_client.__exit__ = MagicMock(return_value=False)
+
+        with patch("personal_shopper.recipes.fetcher._make_client", return_value=mock_client), patch(
+            "personal_shopper.recipes.fetcher._extract_recipe_links_from_sitemap", return_value=[]
+        ) as mock_extract:
+            stored_allowed, scanned = refresh_recipe_catalog(settings=settings)
+
+        assert stored_allowed == 0
+        assert scanned == 0
+        mock_extract.assert_called_once_with(client=mock_client, limit=None)
+
+    def test_uses_env_limit_for_sitemap_scan(self, tmp_path):
+        db_path = tmp_path / "catalog_refresh_limited.db"
+        init_db(db_path)
+        settings = Settings(database_path=db_path, delhaize_refresh_max_urls=123)
+
+        mock_client = MagicMock()
+        mock_client.__enter__ = lambda s: s
+        mock_client.__exit__ = MagicMock(return_value=False)
+
+        with patch("personal_shopper.recipes.fetcher._make_client", return_value=mock_client), patch(
+            "personal_shopper.recipes.fetcher._extract_recipe_links_from_sitemap", return_value=[]
+        ) as mock_extract:
+            stored_allowed, scanned = refresh_recipe_catalog(settings=settings)
+
+        assert stored_allowed == 0
+        assert scanned == 0
+        mock_extract.assert_called_once_with(client=mock_client, limit=123)

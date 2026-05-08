@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     delhaize_recipes_path: str = "/nl/nl/food-inspiration/recipes"
     delhaize_vegetarian_tag: str = "vegetarisch"
     delhaize_recipes_per_run: int = 8
+    delhaize_refresh_max_urls: int | None = None
 
     slack_bot_token: str = ""
     slack_signing_secret: str = ""

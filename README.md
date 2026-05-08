@@ -61,6 +61,7 @@ cp .env.example .env  # fill in your credentials
 | `DATABASE_PATH` | SQLite database file path | `personal_shopper.db` |
 | `DELHAIZE_BASE_URL` | Delhaize website base URL | `https://www.delhaize.be` |
 | `DELHAIZE_RECIPES_PER_RUN` | Number of recipes to fetch weekly | `8` |
+| `DELHAIZE_REFRESH_MAX_URLS` | Optional cap for `refresh-recipes` sitemap scan (`refreshes all` when unset) | unset |
 | `SLACK_BOT_TOKEN` | Slack Bot OAuth token | — |
 | `SLACK_SIGNING_SECRET` | Slack app signing secret | — |
 | `SLACK_CHANNEL` | Slack channel to post recipes | `#recepten` |

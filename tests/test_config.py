@@ -8,6 +8,7 @@ def test_default_settings():
     assert s.database_path == Path("personal_shopper.db")
     assert "delhaize.be" in s.delhaize_base_url
     assert s.delhaize_recipes_per_run == 8
+    assert s.delhaize_refresh_max_urls is None
 
 
 def test_recipes_url_property():
@@ -35,8 +36,10 @@ def test_reset_clears_singleton():
 def test_env_override(monkeypatch):
     reset_settings()
     monkeypatch.setenv("DELHAIZE_RECIPES_PER_RUN", "12")
+    monkeypatch.setenv("DELHAIZE_REFRESH_MAX_URLS", "500")
     s = Settings()
     assert s.delhaize_recipes_per_run == 12
+    assert s.delhaize_refresh_max_urls == 500
     reset_settings()
 
 
