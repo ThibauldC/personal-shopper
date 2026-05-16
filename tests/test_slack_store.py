@@ -5,8 +5,13 @@ import pytest
 from personal_shopper.database.db import get_connection, init_db
 from personal_shopper.recipes.models import Recipe
 from personal_shopper.slack.store import (
+    claim_cart_job,
+    create_cart_job,
     create_run,
+    get_cart_job_payload,
     get_run_id_for_offered,
+    mark_cart_job_failed,
+    mark_cart_job_succeeded,
     record_selection,
     store_offered_recipes,
 )
@@ -187,3 +192,69 @@ class TestGetRunIdForOffered:
         run_id = create_run(db_path)
         offered_ids = store_offered_recipes(db_path, run_id, recipes)
         assert get_run_id_for_offered(db_path, offered_ids[1]) == run_id
+
+
+class TestCartJobs:
+    def test_create_cart_job(self, db_path, recipes):
+        run_id = create_run(db_path)
+        offered_ids = store_offered_recipes(db_path, run_id, recipes)
+        selected_id = record_selection(db_path, run_id, offered_ids[0])
+        job_id = create_cart_job(db_path, selected_id)
+        assert isinstance(job_id, int)
+        assert job_id > 0
+
+    def test_create_cart_job_idempotent(self, db_path, recipes):
+        run_id = create_run(db_path)
+        offered_ids = store_offered_recipes(db_path, run_id, recipes)
+        selected_id = record_selection(db_path, run_id, offered_ids[0])
+        first = create_cart_job(db_path, selected_id)
+        second = create_cart_job(db_path, selected_id)
+        assert first is not None
+        assert second is None
+
+    def test_claim_cart_job(self, db_path, recipes):
+        run_id = create_run(db_path)
+        offered_ids = store_offered_recipes(db_path, run_id, recipes)
+        selected_id = record_selection(db_path, run_id, offered_ids[0])
+        job_id = create_cart_job(db_path, selected_id)
+        assert job_id is not None
+        assert claim_cart_job(db_path, job_id)
+        assert not claim_cart_job(db_path, job_id)
+
+    def test_get_cart_job_payload(self, db_path, recipes):
+        run_id = create_run(db_path)
+        offered_ids = store_offered_recipes(db_path, run_id, recipes)
+        selected_id = record_selection(db_path, run_id, offered_ids[0])
+        job_id = create_cart_job(db_path, selected_id)
+        assert job_id is not None
+        payload = get_cart_job_payload(db_path, job_id)
+        assert payload is not None
+        assert payload["recipe_title"] == "Pasta"
+
+    def test_mark_cart_job_succeeded(self, db_path, recipes):
+        run_id = create_run(db_path)
+        offered_ids = store_offered_recipes(db_path, run_id, recipes)
+        selected_id = record_selection(db_path, run_id, offered_ids[0])
+        job_id = create_cart_job(db_path, selected_id)
+        assert job_id is not None
+        mark_cart_job_succeeded(db_path, job_id)
+        with get_connection(db_path) as conn:
+            row = conn.execute(
+                "SELECT status, completed_at FROM cart_jobs WHERE id=?", (job_id,)
+            ).fetchone()
+        assert row["status"] == "succeeded"
+        assert row["completed_at"] is not None
+
+    def test_mark_cart_job_failed(self, db_path, recipes):
+        run_id = create_run(db_path)
+        offered_ids = store_offered_recipes(db_path, run_id, recipes)
+        selected_id = record_selection(db_path, run_id, offered_ids[0])
+        job_id = create_cart_job(db_path, selected_id)
+        assert job_id is not None
+        mark_cart_job_failed(db_path, job_id, "boom")
+        with get_connection(db_path) as conn:
+            row = conn.execute(
+                "SELECT status, error_message FROM cart_jobs WHERE id=?", (job_id,)
+            ).fetchone()
+        assert row["status"] == "failed"
+        assert row["error_message"] == "boom"

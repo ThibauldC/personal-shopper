@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,6 +18,13 @@ class Settings(BaseSettings):
     slack_bot_token: str = ""
     slack_signing_secret: str = ""
     slack_channel: str = "#recepten"
+
+    delhaize_username: str = Field(default="", validation_alias=AliasChoices("DELHAIZE_USERNAME"))
+    delhaize_password: str = Field(
+        default="",
+        validation_alias=AliasChoices("DELHAIZE_PASSWORD", "DELHAIZE_PWD"),
+    )
+    delhaize_profile_path: Path = Path("/home/opencode/.pw-delhaize-profile")
 
     @property
     def delhaize_recipes_url(self) -> str:

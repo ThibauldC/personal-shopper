@@ -9,6 +9,7 @@ from personal_shopper.recipes.models import Recipe
 from personal_shopper.slack.bot import (
     _extract_title_from_body,
     _on_select_recipe,
+    _process_cart_job_and_notify,
     create_app,
     send_recipe_options,
 )
@@ -106,7 +107,10 @@ class TestOnSelectRecipe:
 
         ack = MagicMock()
         say = MagicMock()
-        _on_select_recipe(ack, {"value": str(offered_ids[0])}, say, {}, db_path)
+        settings = Settings(database_path=db_path)
+        with patch("personal_shopper.slack.bot.threading.Thread") as mock_thread:
+            _on_select_recipe(ack, {"value": str(offered_ids[0])}, say, {}, settings)
+            mock_thread.assert_called_once()
 
         ack.assert_called_once()
         with get_connection(db_path) as conn:
@@ -118,10 +122,12 @@ class TestOnSelectRecipe:
         offered_ids = store_offered_recipes(db_path, run_id, [recipe])
 
         say = MagicMock()
-        _on_select_recipe(MagicMock(), {"value": str(offered_ids[0])}, say, {}, db_path)
+        settings = Settings(database_path=db_path)
+        with patch("personal_shopper.slack.bot.threading.Thread"):
+            _on_select_recipe(MagicMock(), {"value": str(offered_ids[0])}, say, {}, settings)
 
-        say.assert_called_once()
-        assert "toegevoegd" in say.call_args[0][0]
+        assert say.call_count >= 1
+        assert "toegevoegd" in say.call_args_list[0][0][0]
 
     def test_say_includes_title_from_body(self, db_path, recipe):
         run_id = create_run(db_path)
@@ -141,20 +147,40 @@ class TestOnSelectRecipe:
             }
         }
         say = MagicMock()
-        _on_select_recipe(MagicMock(), {"value": str(offered_ids[0])}, say, body, db_path)
-        assert "Pasta Pesto" in say.call_args[0][0]
+        settings = Settings(database_path=db_path)
+        with patch("personal_shopper.slack.bot.threading.Thread"):
+            _on_select_recipe(MagicMock(), {"value": str(offered_ids[0])}, say, body, settings)
+        assert "Pasta Pesto" in say.call_args_list[0][0][0]
 
     def test_unknown_offered_id_no_say(self, db_path):
         ack = MagicMock()
         say = MagicMock()
-        _on_select_recipe(ack, {"value": "9999"}, say, {}, db_path)
+        settings = Settings(database_path=db_path)
+        _on_select_recipe(ack, {"value": "9999"}, say, {}, settings)
         ack.assert_called_once()
         say.assert_not_called()
 
     def test_ack_always_called(self, db_path):
         ack = MagicMock()
-        _on_select_recipe(ack, {"value": "9999"}, MagicMock(), {}, db_path)
+        settings = Settings(database_path=db_path)
+        _on_select_recipe(ack, {"value": "9999"}, MagicMock(), {}, settings)
         ack.assert_called_once()
+
+
+class TestProcessCartJobAndNotify:
+    def test_sends_success_message(self, db_path):
+        say = MagicMock()
+        settings = Settings(database_path=db_path)
+        with patch("personal_shopper.slack.bot.process_cart_job", return_value=True):
+            _process_cart_job_and_notify(db_path, 1, settings, say, "Pasta")
+        assert "toegevoegd" in say.call_args[0][0]
+
+    def test_sends_failure_message(self, db_path):
+        say = MagicMock()
+        settings = Settings(database_path=db_path)
+        with patch("personal_shopper.slack.bot.process_cart_job", return_value=False):
+            _process_cart_job_and_notify(db_path, 1, settings, say, "Pasta")
+        assert "Kon ingredienten" in say.call_args[0][0]
 
 
 class TestSendRecipeOptions:

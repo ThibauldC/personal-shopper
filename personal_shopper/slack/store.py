@@ -59,3 +59,78 @@ def get_run_id_for_offered(db_path: Path, offered_id: int) -> int | None:
             (offered_id,),
         ).fetchone()
     return row["run_id"] if row else None
+
+
+def create_cart_job(db_path: Path, selected_recipe_id: int) -> int | None:
+    """Create a cart job. Returns None when job already exists."""
+    now = datetime.now(UTC).isoformat()
+    with get_connection(db_path) as conn:
+        cursor = conn.execute(
+            """INSERT OR IGNORE INTO cart_jobs
+               (selected_recipe_id, status, attempts, created_at, updated_at)
+               VALUES (?, 'pending', 0, ?, ?)""",
+            (selected_recipe_id, now, now),
+        )
+        if cursor.rowcount == 0:
+            return None
+        return cursor.lastrowid  # type: ignore[return-value]
+
+
+def claim_cart_job(db_path: Path, job_id: int) -> bool:
+    """Mark pending job as running and increment attempts."""
+    now = datetime.now(UTC).isoformat()
+    with get_connection(db_path) as conn:
+        cursor = conn.execute(
+            """UPDATE cart_jobs
+               SET status = 'running',
+                   attempts = attempts + 1,
+                   updated_at = ?,
+                   error_message = NULL
+               WHERE id = ? AND status = 'pending'""",
+            (now, job_id),
+        )
+        return cursor.rowcount > 0
+
+
+def get_cart_job_payload(db_path: Path, job_id: int) -> dict | None:
+    """Return joined cart-job payload needed for automation."""
+    with get_connection(db_path) as conn:
+        row = conn.execute(
+            """SELECT cj.id AS job_id,
+                      sr.id AS selected_recipe_id,
+                      o.url AS recipe_url,
+                      o.title AS recipe_title
+               FROM cart_jobs cj
+               JOIN selected_recipes sr ON sr.id = cj.selected_recipe_id
+               JOIN offered_recipes o ON o.id = sr.offered_id
+               WHERE cj.id = ?""",
+            (job_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def mark_cart_job_succeeded(db_path: Path, job_id: int) -> None:
+    now = datetime.now(UTC).isoformat()
+    with get_connection(db_path) as conn:
+        conn.execute(
+            """UPDATE cart_jobs
+               SET status = 'succeeded',
+                   updated_at = ?,
+                   completed_at = ?
+               WHERE id = ?""",
+            (now, now, job_id),
+        )
+
+
+def mark_cart_job_failed(db_path: Path, job_id: int, error_message: str) -> None:
+    now = datetime.now(UTC).isoformat()
+    with get_connection(db_path) as conn:
+        conn.execute(
+            """UPDATE cart_jobs
+               SET status = 'failed',
+                   updated_at = ?,
+                   completed_at = ?,
+                   error_message = ?
+               WHERE id = ?""",
+            (now, now, error_message[:1000], job_id),
+        )

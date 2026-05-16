@@ -65,6 +65,8 @@ cp .env.example .env  # fill in your credentials
 | `SLACK_BOT_TOKEN` | Slack Bot OAuth token | — |
 | `SLACK_SIGNING_SECRET` | Slack app signing secret | — |
 | `SLACK_CHANNEL` | Slack channel to post recipes | `#recepten` |
+| `DELHAIZE_USERNAME` | Delhaize account email/username | — |
+| `DELHAIZE_PASSWORD` | Delhaize account password (`DELHAIZE_PWD` also supported) | — |
 
 ## Development
 
@@ -96,6 +98,8 @@ This loads 8 recipes from the local catalog using a random seed, persists them t
 ## Slack interaction (US-005)
 
 Users click "Selecteer" on one or more recipe cards. Each click triggers the `select_recipe` action handler, which records the selection in `selected_recipes` and replies with a Dutch confirmation in Slack.
+
+Each selection also creates an async `cart_jobs` task that uses Playwright to open the recipe URL and click the recipe page add-to-cart control.
 
 To run the Bolt server (required to receive button interactions):
 

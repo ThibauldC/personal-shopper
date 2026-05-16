@@ -77,4 +77,15 @@ CREATE TABLE IF NOT EXISTS recipe_catalog (
     is_allowed      INTEGER NOT NULL,
     fetched_at      TEXT    NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS cart_jobs (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    selected_recipe_id  INTEGER NOT NULL UNIQUE REFERENCES selected_recipes(id),
+    status              TEXT    NOT NULL DEFAULT 'pending',
+    attempts            INTEGER NOT NULL DEFAULT 0,
+    error_message       TEXT,
+    created_at          TEXT    NOT NULL,
+    updated_at          TEXT    NOT NULL,
+    completed_at        TEXT
+);
 """

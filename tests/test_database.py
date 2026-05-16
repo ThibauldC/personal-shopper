@@ -32,6 +32,7 @@ def test_all_tables_created(db_path: Path):
         "weekly_runs",
         "offered_recipes",
         "selected_recipes",
+        "cart_jobs",
         "ingredients",
         "aggregated_items",
         "staple_items",
