@@ -17,6 +17,7 @@ class Settings(BaseSettings):
 
     slack_bot_token: str = ""
     slack_signing_secret: str = ""
+    slack_app_token: str = ""
     slack_channel: str = "#recepten"
 
     delhaize_username: str = Field(default="", validation_alias=AliasChoices("DELHAIZE_USERNAME"))
