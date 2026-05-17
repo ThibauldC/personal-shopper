@@ -134,3 +134,16 @@ def mark_cart_job_failed(db_path: Path, job_id: int, error_message: str) -> None
                WHERE id = ?""",
             (now, now, error_message[:1000], job_id),
         )
+
+
+def get_pending_cart_job_ids(db_path: Path, limit: int = 10) -> list[int]:
+    with get_connection(db_path) as conn:
+        rows = conn.execute(
+            """SELECT id
+               FROM cart_jobs
+               WHERE status = 'pending'
+               ORDER BY id ASC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+    return [int(row["id"]) for row in rows]

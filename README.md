@@ -25,34 +25,17 @@ cp .env.example .env  # fill in your credentials
    - Copy **Signing Secret** → `SLACK_SIGNING_SECRET`
 4. Under **Features → OAuth & Permissions**, add the bot token scopes you need (`chat:write`, `channels:read`, etc.), then click **Install to Workspace**.
    - Copy the **Bot User OAuth Token** (starts with `xoxb-`) → `SLACK_BOT_TOKEN`
-5. Under **Features → Interactivity & Shortcuts**, enable interactivity and set the **Request URL** to your server's `/slack/events` endpoint.
+5. Under **Features → Socket Mode**, enable Socket Mode and create an **App-Level Token** with `connections:write` scope.
+   - Copy the token (starts with `xapp-`) → `SLACK_APP_TOKEN`
+6. Under **Features → Interactivity & Shortcuts**, enable interactivity.
 
-   **Local dev with ngrok:**
+   **Local dev (Socket Mode):**
 
-   Install ngrok if you haven't:
    ```bash
-   brew install ngrok
-   ngrok config add-authtoken <your-token>  # one-time, from ngrok dashboard
+   uv run python -m personal_shopper.slack.service
    ```
 
-   In one terminal, start the Bolt server:
-   ```bash
-   uv run python -c "from personal_shopper.slack.bot import create_app; app = create_app(); app.start(port=3000)"
-   ```
-
-   In another terminal, expose it:
-   ```bash
-   ngrok http 3000
-   ```
-
-   ngrok prints a public URL like `https://abc123.ngrok-free.app`. Paste this into the Slack **Request URL** field:
-   ```
-   https://abc123.ngrok-free.app/slack/events
-   ```
-
-   Slack will send a verification request immediately — the Bolt server handles it automatically. Once the URL shows **Verified**, button clicks in Slack will reach your local process.
-
-   > **Note:** the ngrok URL changes every time you restart ngrok (on the free plan). You'll need to update the Request URL in the Slack dashboard each session.
+   No public Request URL or ngrok tunnel is required for button interactions.
 
 ### Environment variables
 
@@ -64,6 +47,7 @@ cp .env.example .env  # fill in your credentials
 | `DELHAIZE_REFRESH_MAX_URLS` | Optional cap for `refresh-recipes` sitemap scan (`refreshes all` when unset) | unset |
 | `SLACK_BOT_TOKEN` | Slack Bot OAuth token | — |
 | `SLACK_SIGNING_SECRET` | Slack app signing secret | — |
+| `SLACK_APP_TOKEN` | Slack app-level token for Socket Mode (`xapp-...`) | — |
 | `SLACK_CHANNEL` | Slack channel to post recipes | `#recepten` |
 | `DELHAIZE_USERNAME` | Delhaize account email/username | — |
 | `DELHAIZE_PASSWORD` | Delhaize account password (`DELHAIZE_PWD` also supported) | — |
@@ -101,12 +85,67 @@ Users click "Selecteer" on one or more recipe cards. Each click triggers the `se
 
 Each selection also creates an async `cart_jobs` task that uses Playwright to open the recipe URL and click the recipe page add-to-cart control.
 
-To run the Bolt server (required to receive button interactions):
+To run the Socket Mode listener (required to receive button interactions):
 
 ```python
-from personal_shopper.slack.bot import create_app
-app = create_app()
-app.start(port=3000)
+from personal_shopper.slack.service import run_socket_mode
+run_socket_mode()
+```
+
+## Production setup (systemd)
+
+Use two long-running Linux services:
+
+1. **Slack listener**: receives Slack interactions and enqueues cart jobs
+2. **Cart worker**: continuously processes `cart_jobs` from SQLite
+
+Copy service files:
+
+```bash
+sudo cp deploy/systemd/personal-shopper-slack.service /etc/systemd/system/
+sudo cp deploy/systemd/personal-shopper-cart-worker.service /etc/systemd/system/
+sudo systemctl daemon-reload
+```
+
+Enable and start:
+
+```bash
+sudo systemctl enable --now personal-shopper-slack.service
+sudo systemctl enable --now personal-shopper-cart-worker.service
+```
+
+Inspect logs:
+
+```bash
+sudo journalctl -u personal-shopper-slack.service -f
+sudo journalctl -u personal-shopper-cart-worker.service -f
+```
+
+ASCII architecture:
+
+```text
+Slack User
+    |
+    v
+Slack Platform
+    |
+    | Socket Mode (WebSocket)
+    v
+personal-shopper-slack.service
+  (personal_shopper.slack.service)
+    |
+    | insert cart_jobs
+    v
+SQLite (personal_shopper.db)
+    |
+    | poll pending jobs
+    v
+personal-shopper-cart-worker.service
+  (personal_shopper.cart.worker)
+    |
+    | Playwright automation
+    v
+Delhaize cart (ingredients only)
 ```
 
 ## Architecture
